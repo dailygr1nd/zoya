@@ -18,6 +18,7 @@ export default function DashboardPage() {
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
+  const [profileError, setProfileError] = useState("");
   const [agent, setAgent] = useState<Agent | null>(null);
 
   useEffect(() => {
@@ -31,6 +32,14 @@ export default function DashboardPage() {
         return;
       }
 
+      const displayName = typeof user.user_metadata?.full_name === "string"
+        ? user.user_metadata.full_name.slice(0, 120) : "Property owner";
+      const { error: profileError } = await supabase.rpc("ensure_agent", { p_name: displayName || "Property owner" });
+      if (profileError) {
+        setLoading(false);
+        setProfileError("Could not load your profile. Please try again later.");
+        return;
+      }
       const { data } = await supabase
         .from("agents")
         .select("*")
@@ -53,6 +62,8 @@ export default function DashboardPage() {
     await supabase.auth.signOut();
     router.push("/login");
   }
+
+  if (profileError) return <main className="p-10" role="alert">{profileError}</main>;
 
   if (loading) {
     return (

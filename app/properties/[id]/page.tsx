@@ -249,6 +249,7 @@ export default function PropertyPage() {
   }
 
   function contactWhatsApp() {
+    if (!property) return;
     if (!agentWhatsapp) {
       alert("No WhatsApp number has been provided for this property.");
       return;

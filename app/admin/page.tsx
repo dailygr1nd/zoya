@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { apiRequest } from "../../lib/api-client";
 import { supabase } from "../../lib/supabase";
 
 type PropertyStatus = "pending" | "approved" | "rejected";
@@ -30,6 +31,23 @@ type Property = {
 
 type Filter = "pending" | "approved" | "rejected" | "all";
 
+async function loadReviewRows() {
+      const result = await apiRequest("/api/admin/properties");
+      // Private review media uses the reviewer's JWT, never the anonymous endpoint.
+      const preview = async (url: string | null) => {
+        if (!url?.startsWith("/api/media/")) return null;
+        const [bucket, ...parts] = url.slice("/api/media/".length).split("/");
+        const { data } = await supabase.storage.from(bucket).createSignedUrl(parts.join("/"), 600);
+        return data?.signedUrl || null;
+      };
+      const rows = await Promise.all((result.properties as Property[]).map(async (row) => ({
+        ...row, image_url: await preview(row.image_url),
+        image_urls: (await Promise.all((row.image_urls || []).map(preview))).filter((url): url is string => url !== null),
+        video_url: await preview(row.video_url),
+      })));
+      return rows;
+}
+
 export default function AdminPage() {
   const [properties, setProperties] = useState<Property[]>([]);
   const [loading, setLoading] = useState(true);
@@ -39,115 +57,48 @@ export default function AdminPage() {
   const [updating, setUpdating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  async function fetchProperties(showLoading = false) {
-    if (showLoading) {
-      setLoading(true);
-    } else {
-      setRefreshing(true);
-    }
+  const [loadError, setLoadError] = useState("");
 
-    const { data, error } = await supabase
-      .from("properties")
-      .select("*")
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      console.error("Error loading properties:", error);
-
-      if (showLoading) {
-        setLoading(false);
-      }
-
-      setRefreshing(false);
-      return;
-    }
-
-    setProperties(data || []);
-
-    if (showLoading) {
+  async function fetchProperties() {
+    try {
+      const rows = await loadReviewRows();
+      setProperties(rows);
+      setLoadError("");
+    } catch (error) {
+      setProperties([]);
+      setLoadError(error instanceof Error ? error.message : "Unable to load listings.");
+    } finally {
       setLoading(false);
+      setRefreshing(false);
     }
-
-    setRefreshing(false);
   }
 
   useEffect(() => {
-    fetchProperties(true);
+    let active = true;
+    loadReviewRows().then(rows => {
+      if (active) setProperties(rows);
+    }).catch(error => {
+      if (active) setLoadError(error instanceof Error ? error.message : "Unable to load listings.");
+    }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
   }, []);
 
-  async function updateStatus(
-    id: string,
-    status: PropertyStatus
-  ) {
+  async function updateStatus(id: string, status: PropertyStatus) {
+    const current = properties.find((property) => property.id === id);
+    if (!current) return;
+    const reason = window.prompt("Give a review reason (5–1000 characters). Approval does not verify ownership.");
+    if (reason === null) return;
     setUpdating(true);
-
-    /*
-     * Update the UI immediately.
-     * This makes the dashboard feel instant.
-     */
-    setProperties((currentProperties) =>
-      currentProperties.map((property) =>
-        property.id === id
-          ? {
-              ...property,
-              status,
-              verified: status === "approved",
-            }
-          : property
-      )
-    );
-
-    /*
-     * Also update the selected property shown
-     * inside the modal.
-     */
-    setSelectedProperty((currentProperty) =>
-      currentProperty
-        ? {
-            ...currentProperty,
-            status,
-            verified: status === "approved",
-          }
-        : null
-    );
-
-    const { error } = await supabase
-      .from("properties")
-      .update({
-        status,
-        verified: status === "approved",
-      })
-      .eq("id", id);
-
-    if (error) {
-      console.error("Error updating property:", error);
-
-      /*
-       * If Supabase rejects the update, reload the
-       * actual database state so the UI doesn't lie.
-       */
+    try {
+      await apiRequest("/api/admin/properties", "PATCH", {
+        id, status, expected_status: current.status, reason,
+      });
+      setSelectedProperty(null);
       await fetchProperties();
-
-      alert(
-        "Something went wrong while updating this property."
-      );
-
-      setUpdating(false);
-      return;
-    }
-
-    /*
-     * Close the review modal after successful update.
-     */
-    setSelectedProperty(null);
-
-    /*
-     * Re-fetch from Supabase to make absolutely sure
-     * the dashboard matches the database.
-     */
-    await fetchProperties();
-
-    setUpdating(false);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Review failed.");
+      await fetchProperties();
+    } finally { setUpdating(false); }
   }
 
   const filteredProperties = useMemo(() => {
@@ -194,6 +145,8 @@ export default function AdminPage() {
     }).format(new Date(date));
   }
 
+  if (loadError) return <main className="p-10"><h1>Administration unavailable</h1><p role="alert">{loadError}</p><Link href="/login">Sign in</Link></main>;
+
   return (
     <main className="min-h-screen bg-[#F5F3EE] text-[#171717]">
 
@@ -223,7 +176,7 @@ export default function AdminPage() {
           <div className="flex items-center gap-5">
 
             <button
-              onClick={() => fetchProperties()}
+              onClick={() => { setRefreshing(true); void fetchProperties(); }}
               disabled={refreshing}
               className="text-sm font-medium text-gray-500 transition hover:text-black disabled:opacity-50"
             >

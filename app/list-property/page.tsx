@@ -1,12 +1,16 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useState } from "react";
+import { ChangeEvent, FormEvent, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { apiRequest } from "../../lib/api-client";
+import { parseListing } from "../../lib/validation";
 import { supabase } from "../../lib/supabase";
 
 export default function ListPropertyPage() {
   const router = useRouter();
+  const submissionId = useRef<string | null>(null);
+  const uploadedFiles = useRef(new Map<File, string>());
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -64,52 +68,24 @@ export default function ListPropertyPage() {
     setVideo(e.target.files[0]);
   }
 
-  async function uploadImage(file: File, index: number) {
-    const fileExtension = file.name.split(".").pop();
-
-    const fileName = `${Date.now()}-${index}-${Math.random()
-      .toString(36)
-      .substring(2)}.${fileExtension}`;
-
-    const filePath = `properties/${fileName}`;
-
-    const { error: uploadError } = await supabase.storage
-      .from("property-images")
-      .upload(filePath, file);
-
-    if (uploadError) {
-      throw uploadError;
-    }
-
-    const { data } = supabase.storage
-      .from("property-images")
-      .getPublicUrl(filePath);
-
-    return data.publicUrl;
-  }
-
-  async function uploadVideo(file: File) {
-    const fileExtension = file.name.split(".").pop();
-
-    const fileName = `${Date.now()}-${Math.random()
-      .toString(36)
-      .substring(2)}.${fileExtension}`;
-
-    const filePath = `properties/${fileName}`;
-
-    const { error: uploadError } = await supabase.storage
-      .from("property-videos")
-      .upload(filePath, file);
-
-    if (uploadError) {
-      throw uploadError;
-    }
-
-    const { data } = supabase.storage
-      .from("property-videos")
-      .getPublicUrl(filePath);
-
-    return data.publicUrl;
+  async function uploadMedia(file: File, ownerId: string, videoFile = false) {
+    const cached = uploadedFiles.current.get(file);
+    if (cached) return cached;
+    const types: Record<string, string> = videoFile
+      ? { "video/mp4": "mp4", "video/webm": "webm" }
+      : { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+    const extension = types[file.type];
+    const limit = videoFile ? 50 * 1024 * 1024 : 10 * 1024 * 1024;
+    if (!extension || file.size <= 0 || file.size > limit) throw new Error(videoFile
+      ? "Use an MP4 or WebM video up to 50 MB."
+      : "Use JPEG, PNG or WebP images up to 10 MB each.");
+    const bucket = videoFile ? "property-videos" : "property-images";
+    const path = `${ownerId}/${crypto.randomUUID()}.${extension}`;
+    const { error } = await supabase.storage.from(bucket).upload(path, file, { contentType: file.type, upsert: false });
+    if (error) throw new Error("Media upload failed. Check your session and file limits.");
+    const url = `/api/media/${bucket}/${path}`;
+    uploadedFiles.current.set(file, url);
+    return url;
   }
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
@@ -119,6 +95,9 @@ export default function ListPropertyPage() {
     setSubmitting(true);
 
     try {
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      if (authError || !user) throw new Error("Sign in before submitting a property.");
+      submissionId.current ||= crypto.randomUUID();
       if (!title.trim()) {
         throw new Error("Please enter a property title.");
       }
@@ -156,7 +135,7 @@ export default function ListPropertyPage() {
       const uploadedImages: string[] = [];
 
       for (let i = 0; i < images.length; i++) {
-        const imageUrl = await uploadImage(images[i], i);
+        const imageUrl = await uploadMedia(images[i], user.id);
 
         uploadedImages.push(imageUrl);
       }
@@ -170,7 +149,7 @@ export default function ListPropertyPage() {
       if (video) {
         setUploadProgress("Uploading property video...");
 
-        videoUrl = await uploadVideo(video);
+        videoUrl = await uploadMedia(video, user.id, true);
       }
 
       // =========================
@@ -179,9 +158,8 @@ export default function ListPropertyPage() {
 
       setUploadProgress("Submitting property...");
 
-      const { error: insertError } = await supabase
-        .from("properties")
-        .insert({
+      await apiRequest("/api/properties", "POST", parseListing({
+          submission_id: submissionId.current,
           title: title.trim(),
           description: description.trim() || null,
 
@@ -213,22 +191,16 @@ export default function ListPropertyPage() {
           // PROPERTY STATUS
           // =========================
 
-          verified: false,
-          status: "pending",
+
 
           // =========================
           // MEDIA
           // =========================
 
-          image_url: uploadedImages[0] || null,
           image_urls: uploadedImages,
 
           video_url: videoUrl,
-        });
-
-      if (insertError) {
-        throw insertError;
-      }
+        }, user.id));
 
       // =========================
       // SUCCESS
@@ -238,7 +210,7 @@ export default function ListPropertyPage() {
 
       router.push("/list-property/success");
     } catch (err) {
-      console.error(err);
+
 
       if (err instanceof Error) {
         setError(err.message);

@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import PropertyCard from "../components/PropertyCard";
 import { supabase } from "../../lib/supabase";
 
@@ -47,6 +48,11 @@ const locations = [
 ];
 
 export default function PropertiesPage() {
+  return <Suspense fallback={<main className="p-10">Loading properties…</main>}><PropertiesContent /></Suspense>;
+}
+
+function PropertiesContent() {
+  const params = useSearchParams();
   const [properties, setProperties] = useState<Property[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -55,82 +61,11 @@ export default function PropertiesPage() {
       FILTER STATE
   ========================== */
 
-  const [listingType, setListingType] = useState("All");
-  const [propertyType, setPropertyType] = useState("All");
-  const [location, setLocation] = useState("All");
-  const [bedrooms, setBedrooms] = useState("Any");
-  const [maxPrice, setMaxPrice] = useState("Any");
-
-  /* =========================
-      READ URL FILTERS
-  ========================== */
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-
-    const listing = params.get("listing");
-    const type = params.get("type");
-    const searchLocation = params.get("location");
-    const searchBedrooms = params.get("bedrooms");
-    const searchMaxPrice = params.get("maxPrice");
-
-    if (listing === "sale") {
-      setListingType("Buy");
-    }
-
-    if (listing === "rent") {
-      setListingType("Rent");
-    }
-
-    if (
-      type &&
-      propertyTypes.some(
-        (item) => item.toLowerCase() === type.toLowerCase()
-      )
-    ) {
-      const matchingType = propertyTypes.find(
-        (item) => item.toLowerCase() === type.toLowerCase()
-      );
-
-      if (matchingType) {
-        setPropertyType(matchingType);
-      }
-    }
-
-    if (
-      searchLocation &&
-      locations.some(
-        (item) => item.toLowerCase() === searchLocation.toLowerCase()
-      )
-    ) {
-      const matchingLocation = locations.find(
-        (item) => item.toLowerCase() === searchLocation.toLowerCase()
-      );
-
-      if (matchingLocation) {
-        setLocation(matchingLocation);
-      }
-    }
-
-    if (
-      searchBedrooms &&
-      ["1", "2", "3", "4"].includes(searchBedrooms)
-    ) {
-      setBedrooms(searchBedrooms);
-    }
-
-    if (
-      searchMaxPrice &&
-      [
-        "2000000",
-        "5000000",
-        "500000000",
-        "1000000000",
-      ].includes(searchMaxPrice)
-    ) {
-      setMaxPrice(searchMaxPrice);
-    }
-  }, []);
+  const [listingType, setListingType] = useState(() => params.get("listing") === "sale" ? "Buy" : params.get("listing") === "rent" ? "Rent" : "All");
+  const [propertyType, setPropertyType] = useState(() => propertyTypes.find(item => item.toLowerCase() === params.get("type")?.toLowerCase()) || "All");
+  const [location, setLocation] = useState(() => locations.find(item => item.toLowerCase() === params.get("location")?.toLowerCase()) || "All");
+  const [bedrooms, setBedrooms] = useState(() => ["1", "2", "3", "4"].includes(params.get("bedrooms") || "") ? params.get("bedrooms")! : "Any");
+  const [maxPrice, setMaxPrice] = useState(() => ["2000000", "5000000", "500000000", "1000000000"].includes(params.get("maxPrice") || "") ? params.get("maxPrice")! : "Any");
 
   /* =========================
       FETCH PROPERTIES
